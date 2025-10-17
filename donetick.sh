@@ -155,6 +155,15 @@ pct start $LXC_ID
 echo "Attente du démarrage complet du conteneur..."
 sleep 10
 
+# Configuration réseau pour Alpine si nécessaire
+if [ "$IS_ALPINE" = true ]; then
+    echo -e "${GREEN}===== Configuration réseau Alpine =====${NC}"
+    pct exec $LXC_ID -- ash -c "
+      rc-service networking restart
+      sleep 3
+    "
+fi
+
 echo -e "${GREEN}===== Installation de Docker =====${NC}"
 
 if [ "$IS_ALPINE" = true ]; then
@@ -235,15 +244,41 @@ pct exec $LXC_ID -- sh -c "
   docker compose up -d
 "
 
-# Récupération de l'adresse IP du conteneur
-LXC_IP=$(pct exec $LXC_ID -- hostname -I | awk '{print $1}')
+# Récupération de l'adresse IP du conteneur avec retry
+echo -e "${YELLOW}Récupération de l'adresse IP du conteneur...${NC}"
+LXC_IP=""
+for i in {1..10}; do
+    LXC_IP=$(pct exec $LXC_ID -- ip -4 addr show eth0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
+    if [ -n "$LXC_IP" ]; then
+        break
+    fi
+    echo "Tentative $i/10..."
+    sleep 2
+done
+
+# Si toujours pas d'IP, essayer une autre méthode
+if [ -z "$LXC_IP" ]; then
+    LXC_IP=$(pct exec $LXC_ID -- hostname -I 2>/dev/null | awk '{print $1}')
+fi
+
+# Si toujours pas d'IP, vérifier dans la configuration Proxmox
+if [ -z "$LXC_IP" ]; then
+    echo -e "${YELLOW}Impossible de récupérer l'IP automatiquement${NC}"
+    echo -e "${YELLOW}Vérifiez l'IP manuellement avec: pct exec $LXC_ID -- ip addr show${NC}"
+    LXC_IP="<IP_A_DETERMINER>"
+fi
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}===== Installation terminée ! =====${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo -e "${GREEN}Donetick est accessible à l'adresse : http://$LXC_IP:2021${NC}"
+if [ "$LXC_IP" != "<IP_A_DETERMINER>" ]; then
+    echo -e "${GREEN}Donetick est accessible à l'adresse : http://$LXC_IP:2021${NC}"
+else
+    echo -e "${YELLOW}Donetick sera accessible à l'adresse : http://<IP_DU_CONTENEUR>:2021${NC}"
+    echo -e "${YELLOW}Pour obtenir l'IP, exécutez: pct exec $LXC_ID -- ip addr show eth0${NC}"
+fi
 echo ""
 echo "Informations du conteneur LXC:"
 echo "  - ID: $LXC_ID"
@@ -258,6 +293,7 @@ echo "Configuration située dans: /opt/donetick"
 echo ""
 echo "Commandes utiles:"
 echo "  - Console: pct enter $LXC_ID"
+echo "  - Obtenir l'IP: pct exec $LXC_ID -- ip addr show eth0"
 echo "  - Logs: pct exec $LXC_ID -- docker compose -f /opt/donetick/docker-compose.yml logs -f"
 echo "  - Redémarrer: pct exec $LXC_ID -- docker compose -f /opt/donetick/docker-compose.yml restart"
 echo "  - Arrêter: pct exec $LXC_ID -- docker compose -f /opt/donetick/docker-compose.yml down"
