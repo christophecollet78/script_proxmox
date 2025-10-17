@@ -10,12 +10,11 @@ set -e
 LXC_ID=200
 LXC_NAME="donetick"
 LXC_HOSTNAME="donetick"
-LXC_MEMORY=2048
-LXC_SWAP=512
-LXC_DISK_SIZE=8
-LXC_CORES=2
+LXC_MEMORY=1024
+LXC_SWAP=256
+LXC_DISK_SIZE=4
+LXC_CORES=1
 LXC_PASSWORD="votremotdepasse"
-DONETICK_PORT=2021
 
 # Couleurs pour l'affichage
 RED='\033[0;31m'
@@ -49,17 +48,41 @@ select LXC_STORAGE in "${STORAGES[@]}"; do
     fi
 done
 
-# Récupération des templates disponibles
+# Mise à jour de la liste des templates
 echo ""
-echo -e "${GREEN}===== Sélection du template =====${NC}"
-echo "Récupération des templates disponibles..."
+echo -e "${GREEN}===== Mise à jour de la liste des templates =====${NC}"
+pveam update
 
-mapfile -t TEMPLATES < <(pveam available | grep -E "debian-12|ubuntu-24" | awk '{print $2}')
+# Récupération de la dernière version d'Alpine disponible
+echo ""
+echo -e "${GREEN}===== Sélection du template Alpine Linux (latest) =====${NC}"
 
-if [ ${#TEMPLATES[@]} -eq 0 ]; then
-    echo -e "${YELLOW}Aucun template trouvé. Utilisation du template par défaut.${NC}"
-    LXC_TEMPLATE="local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst"
+ALPINE_TEMPLATE=$(pveam available --section system | grep alpine | sort -V | tail -1 | awk '{print $2}')
+
+if [ -z "$ALPINE_TEMPLATE" ]; then
+    echo -e "${RED}Erreur: Aucun template Alpine trouvé${NC}"
+    exit 1
+fi
+
+echo -e "${YELLOW}Template Alpine Linux détecté: $ALPINE_TEMPLATE${NC}"
+
+# Vérifier si le template est déjà téléchargé
+if pveam list local | grep -q "$ALPINE_TEMPLATE"; then
+    echo -e "${GREEN}Template déjà téléchargé${NC}"
+    LXC_TEMPLATE="local:vztmpl/$ALPINE_TEMPLATE"
 else
+    echo -e "${YELLOW}Téléchargement du template Alpine Linux...${NC}"
+    pveam download local "$ALPINE_TEMPLATE"
+    LXC_TEMPLATE="local:vztmpl/$ALPINE_TEMPLATE"
+    echo -e "${GREEN}Template téléchargé avec succès${NC}"
+fi
+
+read -p "Utiliser Alpine Linux $ALPINE_TEMPLATE (léger, recommandé) ? (O/n): " USE_ALPINE
+if [[ "$USE_ALPINE" =~ ^[nN]$ ]]; then
+    # Proposer d'autres templates
+    echo "Récupération des autres templates disponibles..."
+    mapfile -t TEMPLATES < <(pveam available --section system | grep -E "debian-12|ubuntu-24|alpine" | awk '{print $2}')
+    
     echo ""
     echo "Templates disponibles:"
     echo ""
@@ -70,6 +93,11 @@ else
             if [ "$TEMPLATE_NAME" = "Autre (spécifier manuellement)" ]; then
                 read -p "Entrez le chemin du template: " LXC_TEMPLATE
             else
+                # Vérifier si le template est téléchargé
+                if ! pveam list local | grep -q "$TEMPLATE_NAME"; then
+                    echo -e "${YELLOW}Téléchargement du template...${NC}"
+                    pveam download local "$TEMPLATE_NAME"
+                fi
                 LXC_TEMPLATE="local:vztmpl/$TEMPLATE_NAME"
             fi
             echo -e "${GREEN}Template sélectionné: $LXC_TEMPLATE${NC}"
@@ -78,6 +106,13 @@ else
             echo -e "${RED}Sélection invalide. Veuillez réessayer.${NC}"
         fi
     done
+fi
+
+# Détection si c'est Alpine pour adapter l'installation
+IS_ALPINE=false
+if [[ "$LXC_TEMPLATE" =~ alpine ]]; then
+    IS_ALPINE=true
+    echo -e "${YELLOW}Mode Alpine détecté - installation optimisée${NC}"
 fi
 
 # Confirmation de la configuration
@@ -89,8 +124,8 @@ echo "Stockage: $LXC_STORAGE"
 echo "Template: $LXC_TEMPLATE"
 echo "Mémoire: ${LXC_MEMORY}MB"
 echo "Disque: ${LXC_DISK_SIZE}GB"
-echo "CPU: $LXC_CORES cœurs"
-echo "Port Donetick: $DONETICK_PORT"
+echo "CPU: $LXC_CORES cœur(s)"
+echo "Port Donetick: 2021"
 echo ""
 
 read -p "Confirmer l'installation ? (o/N): " CONFIRM
@@ -121,34 +156,50 @@ echo "Attente du démarrage complet du conteneur..."
 sleep 10
 
 echo -e "${GREEN}===== Installation de Docker =====${NC}"
-pct exec $LXC_ID -- bash -c "
-  apt-get update
-  apt-get install -y ca-certificates curl gnupg lsb-release
-  
-  # Installation de Docker
-  curl -fsSL https://get.docker.com -o get-docker.sh
-  sh get-docker.sh
-  rm get-docker.sh
-  
-  # Activation de Docker au démarrage
-  systemctl enable docker
-  systemctl start docker
-"
+
+if [ "$IS_ALPINE" = true ]; then
+    # Installation Docker pour Alpine Linux
+    pct exec $LXC_ID -- ash -c "
+      apk update
+      apk add docker docker-cli-compose openrc
+      
+      # Configuration d'OpenRC pour Alpine
+      rc-update add docker boot
+      service docker start
+    "
+else
+    # Installation Docker pour Debian/Ubuntu
+    pct exec $LXC_ID -- bash -c "
+      apt-get update
+      apt-get install -y ca-certificates curl gnupg lsb-release
+      
+      # Installation de Docker
+      curl -fsSL https://get.docker.com -o get-docker.sh
+      sh get-docker.sh
+      rm get-docker.sh
+      
+      # Activation de Docker au démarrage
+      systemctl enable docker
+      systemctl start docker
+    "
+fi
 
 echo -e "${GREEN}===== Création des répertoires Donetick =====${NC}"
-pct exec $LXC_ID -- bash -c "
+pct exec $LXC_ID -- sh -c "
   mkdir -p /opt/donetick/data
   mkdir -p /opt/donetick/config
 "
 
+echo -e "${GREEN}===== Génération du secret JWT =====${NC}"
+JWT_SECRET=$(openssl rand -base64 32 | head -c 32)
+
 echo -e "${GREEN}===== Création du fichier de configuration selfhosted.yaml =====${NC}"
-pct exec $LXC_ID -- bash -c "cat > /opt/donetick/config/selfhosted.yaml << 'EOF'
+pct exec $LXC_ID -- sh -c "cat > /opt/donetick/config/selfhosted.yaml << 'EOF'
 # Donetick selfhosted configuration
 # Documentation: https://docs.donetick.com
 
-# IMPORTANT: Change this to a secure random 32-character string
 jwt:
-  secret: \"$(openssl rand -base64 32 | head -c 32)\"
+  secret: \"$JWT_SECRET\"
   
 server:
   port: 2021
@@ -160,30 +211,25 @@ EOF
 "
 
 echo -e "${GREEN}===== Création du fichier docker-compose.yml =====${NC}"
-pct exec $LXC_ID -- bash -c "cat > /opt/donetick/docker-compose.yml << 'EOF'
+pct exec $LXC_ID -- sh -c "cat > /opt/donetick/docker-compose.yml << 'EOF'
 services:
   donetick:
     image: donetick/donetick:latest
     container_name: donetick
     restart: unless-stopped
     ports:
-      - \"$DONETICK_PORT:2021\"
+      - \"2021:2021\"
     volumes:
-      - .//donetick-data
-      - ./config:/config
+      - /opt/donetick//donetick-data
+      - /opt/donetick/config:/config
     environment:
       - DT_ENV=selfhosted
       - DT_SQLITE_PATH=/donetick-data/donetick.db
 EOF
 "
 
-echo -e "${GREEN}===== Installation de Docker Compose =====${NC}"
-pct exec $LXC_ID -- bash -c "
-  apt-get install -y docker-compose-plugin
-"
-
 echo -e "${GREEN}===== Démarrage de Donetick =====${NC}"
-pct exec $LXC_ID -- bash -c "
+pct exec $LXC_ID -- sh -c "
   cd /opt/donetick
   docker compose pull
   docker compose up -d
@@ -193,20 +239,26 @@ pct exec $LXC_ID -- bash -c "
 LXC_IP=$(pct exec $LXC_ID -- hostname -I | awk '{print $1}')
 
 echo ""
-echo -e "${GREEN}===== Installation terminée =====${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}===== Installation terminée ! =====${NC}"
+echo -e "${GREEN}========================================${NC}"
 echo ""
-echo -e "${GREEN}Donetick est accessible à l'adresse : http://$LXC_IP:$DONETICK_PORT${NC}"
+echo -e "${GREEN}Donetick est accessible à l'adresse : http://$LXC_IP:2021${NC}"
 echo ""
 echo "Informations du conteneur LXC:"
 echo "  - ID: $LXC_ID"
 echo "  - Nom: $LXC_NAME"
 echo "  - Stockage: $LXC_STORAGE"
+echo "  - Template: $(basename $LXC_TEMPLATE)"
 echo "  - IP: $LXC_IP"
-echo "  - Port: $DONETICK_PORT"
+echo "  - Port: 2021"
+echo "  - Ressources: ${LXC_CORES} CPU / ${LXC_MEMORY}MB RAM / ${LXC_DISK_SIZE}GB Disque"
 echo ""
 echo "Configuration située dans: /opt/donetick"
 echo ""
 echo "Commandes utiles:"
-echo "  - Voir les logs: pct exec $LXC_ID -- docker compose -f /opt/donetick/docker-compose.yml logs -f"
+echo "  - Console: pct enter $LXC_ID"
+echo "  - Logs: pct exec $LXC_ID -- docker compose -f /opt/donetick/docker-compose.yml logs -f"
 echo "  - Redémarrer: pct exec $LXC_ID -- docker compose -f /opt/donetick/docker-compose.yml restart"
 echo "  - Arrêter: pct exec $LXC_ID -- docker compose -f /opt/donetick/docker-compose.yml down"
+echo "  - Mettre à jour: pct exec $LXC_ID -- docker compose -f /opt/donetick/docker-compose.yml pull && docker compose up -d"
