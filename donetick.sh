@@ -80,3 +80,4 @@ echo "Installation terminée. Donetick tourne sur le port 2021 dans le conteneur
 
 echo "Récupérez l'IP du conteneur avec :"
 echo "pct exec $CT_ID ip -4 addr show eth0 | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}'"
+
