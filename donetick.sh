@@ -2,6 +2,7 @@
 set -e
 
 # Variables modifiables
+CT_ID=105                    # ID fixe du conteneur LXC à créer
 CT_HOSTNAME="donetick"
 CT_ROOT_PASSWORD="MotDePasseFort123!"  # Remplace par un mot de passe sécurisé
 STORAGE="local-lvm"
@@ -9,22 +10,7 @@ MEMORY=1024
 CORES=1
 NET_BRIDGE="vmbr0"
 
-# Fonction pour trouver un ID libre LXC (200-299)
-find_free_ctid() {
-  for id in $(seq 200 299); do
-    if ! pct status $id &>/dev/null; then
-      echo $id
-      return
-    fi
-  done
-  echo "Erreur : aucun ID LXC libre trouvé dans la plage 200-299." >&2
-  exit 1
-}
-
-CT_ID=$(find_free_ctid)
-echo "ID libre trouvé pour conteneur LXC : $CT_ID"
-
-echo "Création du conteneur LXC Debian 13..."
+echo "Création du conteneur LXC Debian 13 avec l'ID $CT_ID..."
 pct create $CT_ID debian-13-standard_2025XXXXXX_amd64.tar.zst \
   --hostname $CT_HOSTNAME \
   --storage $STORAGE \
