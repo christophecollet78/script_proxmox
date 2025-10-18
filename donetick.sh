@@ -9,15 +9,15 @@ MEMORY=1024
 CORES=1
 NET_BRIDGE="vmbr0"
 
-# Fonction pour trouver un ID libre LXC (100-199)
+# Fonction pour trouver un ID libre LXC (200-299)
 find_free_ctid() {
-  for id in $(seq 100 199); do
+  for id in $(seq 200 299); do
     if ! pct status $id &>/dev/null; then
       echo $id
       return
     fi
   done
-  echo "Erreur : aucun ID LXC libre trouvé dans la plage 100-199." >&2
+  echo "Erreur : aucun ID LXC libre trouvé dans la plage 200-299." >&2
   exit 1
 }
 
